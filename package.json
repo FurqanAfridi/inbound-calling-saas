@@ -34,7 +34,7 @@
   },
   "scripts": {
     "start": "craco start",
-    "build": "TSC_COMPILE_ON_ERROR=true craco build",
+    "build": "cross-env TSC_COMPILE_ON_ERROR=true craco build",
     "test": "craco test",
     "eject": "react-scripts eject"
   },
@@ -60,6 +60,7 @@
     "@types/react": "^19.2.13",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.24",
+    "cross-env": "^10.1.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
     "tailwindcss-animate": "^1.0.7"

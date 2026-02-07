@@ -1,0 +1,706 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Box,
+  Card,
+  CardContent,
+  Typography,
+  Button,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Chip,
+  IconButton,
+  TextField,
+  MenuItem,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Alert,
+  CircularProgress,
+  Stack,
+  Paper,
+  Divider,
+  Tooltip,
+  Select,
+  FormControl,
+  InputLabel,
+  Tabs,
+  Tab,
+} from '@mui/material';
+import {
+  History as HistoryIcon,
+  Phone as PhoneIcon,
+  PlayArrow as PlayIcon,
+  Pause as PauseIcon,
+  Download as DownloadIcon,
+  Visibility as ViewIcon,
+  Search as SearchIcon,
+  FilterList as FilterIcon,
+  BarChart as ChartIcon,
+  AccessTime as TimeIcon,
+  CheckCircle as CheckCircleIcon,
+  Cancel as CancelIcon,
+  CallMade as ForwardIcon,
+} from '@mui/icons-material';
+import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
+import StyledCard from './ui/StyledCard';
+import MetricCard from './ui/MetricCard';
+import { useTheme } from '@mui/material';
+
+interface CallHistoryRecord {
+  id: string;
+  user_id: string;
+  agent_id: string | null;
+  inbound_number_id: string | null;
+  call_sid: string | null;
+  provider: string;
+  caller_number: string;
+  caller_country_code: string | null;
+  called_number: string;
+  called_country_code: string | null;
+  call_status: 'answered' | 'missed' | 'forwarded' | 'busy' | 'failed' | 'no-answer' | 'canceled';
+  call_direction: 'inbound' | 'outbound';
+  call_duration: number;
+  call_start_time: string;
+  call_end_time: string | null;
+  call_answered_time: string | null;
+  recording_url: string | null;
+  recording_duration: number | null;
+  transcript: string | null;
+  transcript_url: string | null;
+  speaker_separated_transcript: any;
+  call_forwarded_to: string | null;
+  call_cost: number | null;
+  call_quality_score: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AnalyticsData {
+  total_calls: number;
+  answered_calls: number;
+  missed_calls: number;
+  forwarded_calls: number;
+  failed_calls: number;
+  total_duration_seconds: number;
+  average_duration_seconds: number;
+  total_cost: number;
+  average_cost: number;
+}
+
+const CallHistory: React.FC = () => {
+  const { user } = useAuth();
+  const theme = useTheme();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [calls, setCalls] = useState<CallHistoryRecord[]>([]);
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+  const [selectedCall, setSelectedCall] = useState<CallHistoryRecord | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [showRecording, setShowRecording] = useState(false);
+  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  
+  // Filters
+  const [timeFilter, setTimeFilter] = useState<'24h' | '7days' | '30days'>('7days');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [agentFilter, setAgentFilter] = useState<string>('all');
+  const [numberFilter, setNumberFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentTab, setCurrentTab] = useState(0);
+  const [agents, setAgents] = useState<Array<{ id: string; name: string }>>([]);
+  const [inboundNumbers, setInboundNumbers] = useState<Array<{ id: string; phone_number: string; phone_label: string | null }>>([]);
+
+  useEffect(() => {
+    if (user) {
+      loadAgents();
+      loadInboundNumbers();
+      fetchCallHistory();
+      fetchAnalytics();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      fetchCallHistory();
+      fetchAnalytics();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, timeFilter, statusFilter, agentFilter, numberFilter]);
+
+  const getDateRange = () => {
+    const now = new Date();
+    const ranges = {
+      '24h': new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      '7days': new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+      '30days': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+    };
+    return ranges[timeFilter];
+  };
+
+  const loadAgents = async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('voice_agents')
+        .select('id, name')
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setAgents(data || []);
+    } catch (err: any) {
+      console.error('Error loading agents:', err);
+    }
+  };
+
+  const loadInboundNumbers = async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('inbound_numbers')
+        .select('id, phone_number, phone_label')
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setInboundNumbers(data || []);
+    } catch (err: any) {
+      console.error('Error loading inbound numbers:', err);
+    }
+  };
+
+  const fetchCallHistory = async () => {
+    if (!user) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const startDate = getDateRange().toISOString();
+      
+      let query = supabase
+        .from('call_history')
+        .select('*')
+        .eq('user_id', user.id)
+        .gte('call_start_time', startDate)
+        .is('deleted_at', null)
+        .order('call_start_time', { ascending: false })
+        .limit(100);
+
+      if (statusFilter !== 'all') {
+        query = query.eq('call_status', statusFilter);
+      }
+
+      if (agentFilter !== 'all') {
+        query = query.eq('agent_id', agentFilter);
+      }
+
+      if (numberFilter !== 'all') {
+        const selectedNumber = inboundNumbers.find(n => n.id === numberFilter);
+        if (selectedNumber) {
+          query = query.eq('called_number', selectedNumber.phone_number);
+        }
+      }
+
+      const { data, error: fetchError } = await query;
+
+      if (fetchError) throw fetchError;
+
+      setCalls(data || []);
+    } catch (err: any) {
+      console.error('Error fetching call history:', err);
+      setError(err.message || 'Failed to load call history');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchAnalytics = async () => {
+    if (!user) return;
+
+    try {
+      const startDate = getDateRange();
+      const endDate = new Date();
+
+      const { data, error: analyticsError } = await supabase.rpc('get_call_statistics', {
+        p_user_id: user.id,
+        p_start_date: startDate.toISOString().split('T')[0],
+        p_end_date: endDate.toISOString().split('T')[0],
+        p_agent_id: null,
+      });
+
+      if (analyticsError) {
+        console.error('Error fetching analytics:', analyticsError);
+        // Set default analytics if function doesn't exist or fails
+        setAnalytics({
+          total_calls: 0,
+          answered_calls: 0,
+          missed_calls: 0,
+          forwarded_calls: 0,
+          failed_calls: 0,
+          total_duration_seconds: 0,
+          average_duration_seconds: 0,
+          total_cost: 0,
+          average_cost: 0,
+        });
+        return;
+      }
+
+      if (data && data.length > 0) {
+        setAnalytics(data[0]);
+      } else {
+        // Set default analytics if no data
+        setAnalytics({
+          total_calls: 0,
+          answered_calls: 0,
+          missed_calls: 0,
+          forwarded_calls: 0,
+          failed_calls: 0,
+          total_duration_seconds: 0,
+          average_duration_seconds: 0,
+          total_cost: 0,
+          average_cost: 0,
+        });
+      }
+    } catch (err: any) {
+      console.error('Error fetching analytics:', err);
+      // Set default analytics on error
+      setAnalytics({
+        total_calls: 0,
+        answered_calls: 0,
+        missed_calls: 0,
+        forwarded_calls: 0,
+        failed_calls: 0,
+        total_duration_seconds: 0,
+        average_duration_seconds: 0,
+        total_cost: 0,
+        average_cost: 0,
+      });
+    }
+  };
+
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleString();
+  };
+
+  const getStatusChip = (status: CallHistoryRecord['call_status']) => {
+    const config: {
+      [key: string]: { label: string; color: 'success' | 'error' | 'info' | 'warning' | 'default'; icon?: React.ReactElement };
+    } = {
+      answered: { label: 'Answered', color: 'success' as const, icon: <CheckCircleIcon /> },
+      missed: { label: 'Missed', color: 'error' as const, icon: <CancelIcon /> },
+      forwarded: { label: 'Forwarded', color: 'info' as const, icon: <ForwardIcon /> },
+      busy: { label: 'Busy', color: 'warning' as const },
+      failed: { label: 'Failed', color: 'error' as const },
+      'no-answer': { label: 'No Answer', color: 'warning' as const },
+      canceled: { label: 'Canceled', color: 'default' as const },
+    };
+    const statusConfig = config[status] || { label: status, color: 'default' as const, icon: undefined };
+    const { label, color, icon } = statusConfig;
+    return <Chip label={label} color={color} size="small" icon={icon} />;
+  };
+
+  const handlePlayRecording = (recordingUrl: string, callId: string) => {
+    if (playingAudio === callId && audioElement) {
+      audioElement.pause();
+      setPlayingAudio(null);
+      setAudioElement(null);
+      return;
+    }
+
+    const audio = new Audio(recordingUrl);
+    audio.play();
+    setPlayingAudio(callId);
+    setAudioElement(audio);
+
+    audio.onended = () => {
+      setPlayingAudio(null);
+      setAudioElement(null);
+    };
+
+    audio.onerror = () => {
+      setError('Failed to play recording');
+      setPlayingAudio(null);
+      setAudioElement(null);
+    };
+  };
+
+  const handleDownloadRecording = async (recordingUrl: string, callId: string) => {
+    try {
+      const response = await fetch(recordingUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `call-recording-${callId}.mp3`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      setError('Failed to download recording');
+    }
+  };
+
+  const handleDownloadTranscript = (transcript: string, callId: string) => {
+    const blob = new Blob([transcript], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `call-transcript-${callId}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  const filteredCalls = calls.filter((call) => {
+    if (!searchQuery) return true;
+    const query = searchQuery.toLowerCase();
+    return (
+      call.caller_number.toLowerCase().includes(query) ||
+      call.called_number.toLowerCase().includes(query) ||
+      call.call_sid?.toLowerCase().includes(query) ||
+      call.transcript?.toLowerCase().includes(query)
+    );
+  });
+
+  if (loading && calls.length === 0) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="60vh">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  return (
+    <>
+      <Box>
+
+        {error && (
+          <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+
+        {/* Analytics Dashboard - VisActor Style */}
+        {analytics && (
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: '1fr',
+                sm: 'repeat(2, 1fr)',
+                md: 'repeat(4, 1fr)',
+              },
+              gap: 2,
+              mb: 4,
+            }}
+          >
+            <MetricCard
+              title="Total Calls"
+              value={analytics.total_calls}
+              change={analytics.total_calls > 0 ? 0.12 : undefined}
+            />
+            <MetricCard
+              title="Answered"
+              value={analytics.answered_calls}
+              change={analytics.answered_calls > 0 ? 0.08 : undefined}
+            />
+            <MetricCard
+              title="Missed"
+              value={analytics.missed_calls}
+              change={analytics.missed_calls > 0 ? -0.05 : undefined}
+            />
+            <MetricCard
+              title="Avg Duration"
+              value={formatDuration(Math.round(analytics.average_duration_seconds))}
+              change={analytics.average_duration_seconds > 0 ? 0.03 : undefined}
+            />
+          </Box>
+        )}
+
+        {/* Filters */}
+        <StyledCard sx={{ mb: 3 }}>
+          <CardContent>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
+              <TextField
+                placeholder="Search calls..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                InputProps={{
+                  startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.secondary' }} />,
+                }}
+                sx={{ flexGrow: 1 }}
+              />
+              <FormControl sx={{ minWidth: 150 }}>
+                <InputLabel>Time Period</InputLabel>
+                <Select
+                  value={timeFilter}
+                  label="Time Period"
+                  onChange={(e) => setTimeFilter(e.target.value as any)}
+                >
+                  <MenuItem value="24h">Last 24 Hours</MenuItem>
+                  <MenuItem value="7days">Last 7 Days</MenuItem>
+                  <MenuItem value="30days">Last 30 Days</MenuItem>
+                </Select>
+              </FormControl>
+              <FormControl sx={{ minWidth: 150 }}>
+                <InputLabel>Status</InputLabel>
+                <Select
+                  value={statusFilter}
+                  label="Status"
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                >
+                  <MenuItem value="all">All Status</MenuItem>
+                  <MenuItem value="answered">Answered</MenuItem>
+                  <MenuItem value="missed">Missed</MenuItem>
+                  <MenuItem value="forwarded">Forwarded</MenuItem>
+                  <MenuItem value="failed">Failed</MenuItem>
+                </Select>
+              </FormControl>
+              <FormControl sx={{ minWidth: 150 }}>
+                <InputLabel>Agent</InputLabel>
+                <Select
+                  value={agentFilter}
+                  label="Agent"
+                  onChange={(e) => setAgentFilter(e.target.value)}
+                >
+                  <MenuItem value="all">All Agents</MenuItem>
+                  {agents.map((agent) => (
+                    <MenuItem key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl sx={{ minWidth: 180 }}>
+                <InputLabel>Phone Number</InputLabel>
+                <Select
+                  value={numberFilter}
+                  label="Phone Number"
+                  onChange={(e) => setNumberFilter(e.target.value)}
+                >
+                  <MenuItem value="all">All Numbers</MenuItem>
+                  {inboundNumbers.map((number) => (
+                    <MenuItem key={number.id} value={number.id}>
+                      {number.phone_number} {number.phone_label ? `(${number.phone_label})` : ''}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Stack>
+          </CardContent>
+        </StyledCard>
+
+        {/* Call History Table */}
+        {filteredCalls.length === 0 ? (
+          <StyledCard>
+            <CardContent>
+              <Box textAlign="center" py={4}>
+                <PhoneIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
+                <Typography variant="h6" gutterBottom>
+                  No Call History
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  No calls found for the selected filters.
+                </Typography>
+              </Box>
+            </CardContent>
+          </StyledCard>
+        ) : (
+          <StyledCard>
+            <TableContainer>
+              <Table>
+              <TableHead>
+                <TableRow sx={{ bgcolor: theme.palette.mode === 'dark' ? 'grey.800' : 'grey.100' }}>
+                  <TableCell sx={{ fontWeight: 600 }}>Date & Time</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Caller</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Called</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Duration</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Recording</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Transcript</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredCalls.map((call) => (
+                  <TableRow key={call.id} hover>
+                    <TableCell>
+                      <Typography variant="body2">{formatDate(call.call_start_time)}</Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2" fontWeight={500}>
+                        {call.caller_country_code} {call.caller_number}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2" fontWeight={500}>
+                        {call.called_country_code} {call.called_number}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>{getStatusChip(call.call_status)}</TableCell>
+                    <TableCell>
+                      <Typography variant="body2" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <TimeIcon fontSize="small" color="action" />
+                        {formatDuration(call.call_duration)}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      {call.recording_url ? (
+                        <Tooltip title={playingAudio === call.id ? 'Pause' : 'Play Recording'}>
+                          <IconButton
+                            size="small"
+                            onClick={() => handlePlayRecording(call.recording_url!, call.id)}
+                          >
+                            {playingAudio === call.id ? <PauseIcon /> : <PlayIcon />}
+                          </IconButton>
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">
+                          No recording
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {call.transcript ? (
+                        <Tooltip title="View Transcript">
+                          <IconButton
+                            size="small"
+                            onClick={() => {
+                              setSelectedCall(call);
+                              setShowTranscript(true);
+                            }}
+                          >
+                            <ViewIcon />
+                          </IconButton>
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">
+                          No transcript
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        {call.recording_url && (
+                          <Tooltip title="Download Recording">
+                            <IconButton
+                              size="small"
+                              onClick={() => handleDownloadRecording(call.recording_url!, call.id)}
+                            >
+                              <DownloadIcon />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                        {call.transcript && (
+                          <Tooltip title="Download Transcript">
+                            <IconButton
+                              size="small"
+                              onClick={() => handleDownloadTranscript(call.transcript!, call.id)}
+                            >
+                              <DownloadIcon />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            </TableContainer>
+          </StyledCard>
+        )}
+
+        {/* Transcript Dialog */}
+        <Dialog
+          open={showTranscript}
+          onClose={() => setShowTranscript(false)}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>
+            Call Transcript
+            {selectedCall && (
+              <Typography variant="caption" color="text.secondary" sx={{ ml: 2 }}>
+                {formatDate(selectedCall.call_start_time)}
+              </Typography>
+            )}
+          </DialogTitle>
+          <DialogContent>
+            {selectedCall?.speaker_separated_transcript ? (
+              <Box>
+                <Typography variant="subtitle2" gutterBottom fontWeight={600}>
+                  Speaker-Separated Transcript
+                </Typography>
+                <Divider sx={{ my: 2 }} />
+                {Array.isArray(selectedCall.speaker_separated_transcript) ? (
+                  selectedCall.speaker_separated_transcript.map((segment: any, index: number) => (
+                    <Box key={index} sx={{ mb: 2 }}>
+                      <Chip
+                        label={`Speaker ${segment.speaker || 'Unknown'}`}
+                        size="small"
+                        sx={{ mb: 1 }}
+                      />
+                      <Typography variant="body2" sx={{ ml: 1 }}>
+                        {segment.text}
+                      </Typography>
+                      {segment.timestamp && (
+                        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                          {segment.timestamp}
+                        </Typography>
+                      )}
+                    </Box>
+                  ))
+                ) : (
+                  <Typography variant="body2">{JSON.stringify(selectedCall.speaker_separated_transcript, null, 2)}</Typography>
+                )}
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="subtitle2" gutterBottom fontWeight={600}>
+                  Full Transcript
+                </Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                  {selectedCall.transcript}
+                </Typography>
+              </Box>
+            ) : (
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                {selectedCall?.transcript || 'No transcript available'}
+              </Typography>
+            )}
+          </DialogContent>
+          <DialogActions>
+            {selectedCall?.transcript && (
+              <Button
+                onClick={() => handleDownloadTranscript(selectedCall.transcript!, selectedCall.id)}
+                startIcon={<DownloadIcon />}
+              >
+                Download
+              </Button>
+            )}
+            <Button onClick={() => setShowTranscript(false)}>Close</Button>
+          </DialogActions>
+        </Dialog>
+      </Box>
+    </>
+  );
+};
+
+export default CallHistory;

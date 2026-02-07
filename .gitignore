@@ -303,8 +303,9 @@ production.config.json
 deploy.config.js
 deploy.config.json
 
-# Deployment scripts with secrets
-deploy.sh
+# Deployment scripts with secrets (but allow template deployment scripts)
+# deploy.sh - Allow main deployment script
+# nginx.conf - Allow nginx configuration template
 deploy-prod.sh
 deploy-staging.sh
 setup-server.sh

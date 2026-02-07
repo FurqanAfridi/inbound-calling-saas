@@ -667,6 +667,8 @@ dist/
 
 # Gatsby files
 .cache/
+# Allow public/index.html (required for React builds)
+!public/index.html
 public/
 
 # Storybook build outputs

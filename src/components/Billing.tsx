@@ -220,17 +220,7 @@ const Billing: React.FC = () => {
         setSubscription(null);
       }
 
-      // Fetch old subscription packages (for backward compatibility)
-      const { data: packagesData } = await supabase
-        .from('subscription_packages')
-        .select('*')
-        .eq('is_active', true)
-        .is('deleted_at', null)
-        .order('monthly_price', { ascending: true });
-
-      setPackages(packagesData || []);
-
-      // Fetch new packages with features and variables
+      // Fetch packages with features and variables from packages table
       const newPackagesData = await fetchPackages();
       setNewPackages(newPackagesData);
 

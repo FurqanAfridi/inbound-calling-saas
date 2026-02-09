@@ -1,10 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mail, ArrowLeft } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Label } from './ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Alert, AlertDescription } from './ui/alert';
 import characterImage from '../assest/verification.png';
@@ -69,7 +67,7 @@ const VerifyEmail: React.FC = () => {
     try {
       if (purpose === 'password_reset') {
         // For password reset, verify OTP using Supabase
-        const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        const { data, error: verifyError } = await (supabase.auth as any).verifyOtp({
           email: email,
           token: otpCode,
           type: 'recovery', // Password reset type
@@ -89,7 +87,7 @@ const VerifyEmail: React.FC = () => {
         let verifyData = null;
 
         // Try 'signup' type first (for initial signup)
-        const signupResult = await supabase.auth.verifyOtp({
+        const signupResult = await (supabase.auth as any).verifyOtp({
           email: email,
           token: otpCode,
           type: 'signup',
@@ -97,7 +95,7 @@ const VerifyEmail: React.FC = () => {
 
         if (signupResult.error) {
           // If signup type fails, try 'email' type (for resend)
-          const emailResult = await supabase.auth.verifyOtp({
+          const emailResult = await (supabase.auth as any).verifyOtp({
             email: email,
             token: otpCode,
             type: 'email',
@@ -161,7 +159,7 @@ const VerifyEmail: React.FC = () => {
         }
       } else {
         // Resend email verification OTP via Supabase by calling signInWithOtp
-        const { error: resendError } = await supabase.auth.signInWithOtp({
+        const { error: resendError } = await (supabase.auth as any).signInWithOtp({
           email: email,
           options: {
             shouldCreateUser: false, // Don't create new user, just resend OTP

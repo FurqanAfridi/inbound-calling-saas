@@ -560,6 +560,25 @@ const AddInboundNumber: React.FC<AddInboundNumberProps> = ({
           {editingNumber ? 'Edit Inbound Number' : 'Add Inbound Number'}
         </DialogTitle>
         <DialogContent sx={{ pt: 3 }}>
+          {webhookLoading && (
+            <Alert severity="info" sx={{ mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <CircularProgress size={20} />
+                <Typography>Waiting for webhook response...</Typography>
+              </Box>
+            </Alert>
+          )}
+
+          {webhookMessage.type && !webhookLoading && (
+            <Alert 
+              severity={webhookMessage.type === 'success' ? 'success' : 'error'} 
+              sx={{ mb: 3 }} 
+              onClose={() => setWebhookMessage({ type: null, message: '' })}
+            >
+              {webhookMessage.message}
+            </Alert>
+          )}
+
           {error && (
             <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
               {error}

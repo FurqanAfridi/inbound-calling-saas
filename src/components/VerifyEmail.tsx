@@ -45,6 +45,16 @@ const VerifyEmail: React.FC = () => {
     }
   };
 
+  const handlePaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData('text').slice(0, 8).replace(/\D/g, '');
+    if (pastedData.length === 8) {
+      const newOtp = pastedData.split('');
+      setOtp(newOtp);
+      inputRefs.current[7]?.focus();
+    }
+  };
+
   const handleVerify = async () => {
     setError('');
     const otpCode = otp.join('');
@@ -73,21 +83,34 @@ const VerifyEmail: React.FC = () => {
 
         navigate('/set-new-password', { state: { email } });
       } else {
-        // For email verification, use Supabase verifyOtp
-        const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        // For email verification, try both 'signup' and 'email' types
+        // 'signup' is for initial signup OTP, 'email' is for resend via signInWithOtp
+        let verifyError = null;
+        let verifyData = null;
+
+        // Try 'signup' type first (for initial signup)
+        const signupResult = await supabase.auth.verifyOtp({
           email: email,
           token: otpCode,
-          type: 'signup', // Email verification type
+          type: 'signup',
         });
 
-        if (verifyError) {
-          setError(verifyError.message || 'Invalid or expired OTP');
-          setLoading(false);
-          return;
+        if (signupResult.error) {
+          // If signup type fails, try 'email' type (for resend)
+          const emailResult = await supabase.auth.verifyOtp({
+            email: email,
+            token: otpCode,
+            type: 'email',
+          });
+          verifyError = emailResult.error;
+          verifyData = emailResult.data;
+        } else {
+          verifyError = signupResult.error;
+          verifyData = signupResult.data;
         }
 
-        if (!data.user) {
-          setError('User not found. Please sign up again.');
+        if (verifyError || !verifyData?.user) {
+          setError(verifyError?.message || 'Invalid or expired OTP');
           setLoading(false);
           return;
         }
@@ -96,11 +119,11 @@ const VerifyEmail: React.FC = () => {
         await supabase
           .from('user_profiles')
           .update({ email_verified: true })
-          .eq('id', data.user.id);
+          .eq('id', verifyData.user.id);
 
         // Create notification
         await supabase.rpc('create_notification', {
-          p_user_id: data.user.id,
+          p_user_id: verifyData.user.id,
           p_type: 'email_verification',
           p_title: 'Email Verified',
           p_message: 'Your email has been successfully verified.',
@@ -137,10 +160,12 @@ const VerifyEmail: React.FC = () => {
           setError('OTP resent! Please check your email.');
         }
       } else {
-        // Resend email verification OTP via Supabase
-        const { error: resendError } = await supabase.auth.resend({
-          type: 'signup',
+        // Resend email verification OTP via Supabase by calling signInWithOtp
+        const { error: resendError } = await supabase.auth.signInWithOtp({
           email: email,
+          options: {
+            shouldCreateUser: false, // Don't create new user, just resend OTP
+          },
         });
 
         if (resendError) {

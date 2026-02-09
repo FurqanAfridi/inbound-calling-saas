@@ -134,8 +134,9 @@ const VerifyEmail: React.FC = () => {
           p_message: 'Your email has been successfully verified.',
         });
 
-        // Refresh the session to ensure user is authenticated
-        await supabase.auth.refreshSession();
+        // Refresh session data to ensure user is authenticated
+        // getSession() will automatically refresh the session if needed
+        await supabase.auth.getSession();
 
         navigate('/dashboard');
       }

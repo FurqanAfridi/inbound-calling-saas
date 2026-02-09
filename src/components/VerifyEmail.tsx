@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Mail, ArrowLeft } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { emailService } from '../services/emailService';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -13,7 +12,7 @@ import characterImage from '../assest/verification.png';
 const VerifyEmail: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
+  const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '', '', '']); // 8 digits for Supabase OTP
   const [email, setEmail] = useState<string>('');
   const [purpose, setPurpose] = useState<string>('email_verification');
   const [loading, setLoading] = useState<boolean>(false);
@@ -35,7 +34,7 @@ const VerifyEmail: React.FC = () => {
     newOtp[index] = value;
     setOtp(newOtp);
 
-    if (value && index < 5) {
+    if (value && index < 7) { // 8 digits (0-7)
       inputRefs.current[index + 1]?.focus();
     }
   };
@@ -50,8 +49,8 @@ const VerifyEmail: React.FC = () => {
     setError('');
     const otpCode = otp.join('');
 
-    if (otpCode.length !== 6) {
-      setError('Please enter the complete 6-digit code');
+    if (otpCode.length !== 8) {
+      setError('Please enter the complete 8-digit code');
       return;
     }
 
@@ -59,84 +58,53 @@ const VerifyEmail: React.FC = () => {
 
     try {
       if (purpose === 'password_reset') {
-        const { data: tokens, error: tokenError } = await supabase
-          .from('email_verification_tokens')
-          .select('*')
-          .eq('email', email)
-          .eq('purpose', 'password_reset')
-          .eq('token', otpCode)
-          .is('used_at', null)
-          .gt('expires_at', new Date().toISOString())
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single();
+        // For password reset, verify OTP using Supabase
+        const { data, error: verifyError } = await supabase.auth.verifyOtp({
+          email: email,
+          token: otpCode,
+          type: 'recovery', // Password reset type
+        });
 
-        if (tokenError || !tokens) {
+        if (verifyError || !data.user) {
           setError('Invalid or expired OTP');
           setLoading(false);
           return;
         }
 
-        await supabase
-          .from('email_verification_tokens')
-          .update({ used_at: new Date().toISOString() })
-          .eq('id', tokens.id);
-
-        navigate('/set-new-password', { state: { email, tokenId: tokens.id } });
+        navigate('/set-new-password', { state: { email } });
       } else {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
+        // For email verification, use Supabase verifyOtp
+        const { data, error: verifyError } = await supabase.auth.verifyOtp({
+          email: email,
+          token: otpCode,
+          type: 'signup', // Email verification type
+        });
+
+        if (verifyError) {
+          setError(verifyError.message || 'Invalid or expired OTP');
+          setLoading(false);
+          return;
+        }
+
+        if (!data.user) {
           setError('User not found. Please sign up again.');
           setLoading(false);
           return;
         }
 
-        const { data: tokens, error: tokenError } = await supabase
-          .from('email_verification_tokens')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('purpose', 'email_verification')
-          .eq('token', otpCode)
-          .is('used_at', null)
-          .gt('expires_at', new Date().toISOString())
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single();
-
-        if (tokenError || !tokens) {
-          setError('Invalid or expired OTP');
-          setLoading(false);
-          return;
-        }
-
-        await supabase
-          .from('email_verification_tokens')
-          .update({ used_at: new Date().toISOString() })
-          .eq('id', tokens.id);
-
         // Update user profile to mark email as verified
         await supabase
           .from('user_profiles')
           .update({ email_verified: true })
-          .eq('id', user.id);
+          .eq('id', data.user.id);
 
-        // Manually confirm email in Supabase Auth
-        // Note: Supabase doesn't provide a direct client-side method to confirm email
-        // The email will be confirmed when user signs in, or you can use admin API
-        // For now, we'll mark it in our database and Supabase will auto-confirm on first login
-        // OR you can create a backend endpoint that uses service_role key to confirm email
-        
         // Create notification
         await supabase.rpc('create_notification', {
-          p_user_id: user.id,
+          p_user_id: data.user.id,
           p_type: 'email_verification',
           p_title: 'Email Verified',
           p_message: 'Your email has been successfully verified.',
         });
-
-        // Refresh session data to ensure user is authenticated
-        // getSession() will automatically refresh the session if needed
-        await supabase.auth.getSession();
 
         navigate('/dashboard');
       }
@@ -157,40 +125,29 @@ const VerifyEmail: React.FC = () => {
         return;
       }
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + 10);
+      if (purpose === 'password_reset') {
+        // Resend password reset OTP via Supabase
+        const { error: resendError } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/verify-email?purpose=password_reset`,
+        });
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user && purpose === 'email_verification') {
-        setError('User not found. Please sign up again.');
-        setLoading(false);
-        return;
-      }
-
-      if (user) {
-        await supabase
-          .from('email_verification_tokens')
-          .insert({
-            user_id: user.id,
-            email: email,
-            token: otp,
-            token_hash: otp,
-            purpose: purpose || 'email_verification',
-            expires_at: expiresAt.toISOString(),
-          });
-      }
-
-      const emailResult = await emailService.sendOTPEmail(
-        email,
-        otp,
-        (purpose as 'email_verification' | 'password_reset') || 'email_verification'
-      );
-
-      if (emailResult.success) {
-        setError('OTP resent! Please check your email.');
+        if (resendError) {
+          setError(resendError.message || 'Failed to resend OTP');
+        } else {
+          setError('OTP resent! Please check your email.');
+        }
       } else {
-        setError(emailResult.error || 'Failed to resend OTP');
+        // Resend email verification OTP via Supabase
+        const { error: resendError } = await supabase.auth.resend({
+          type: 'signup',
+          email: email,
+        });
+
+        if (resendError) {
+          setError(resendError.message || 'Failed to resend OTP');
+        } else {
+          setError('OTP resent! Please check your email.');
+        }
       }
     } catch (err: any) {
       setError(err.message || 'Failed to resend OTP');
@@ -213,17 +170,18 @@ const VerifyEmail: React.FC = () => {
             <CardHeader className="text-center">
               <CardTitle className="text-3xl font-bold text-foreground">Verify Your Email</CardTitle>
               <CardDescription className="text-muted-foreground">
-                Please enter the code we just sent to email.
+                Please enter the 8-digit code we just sent to {email || 'your email'}.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
-                <div className="flex justify-center gap-3">
+                <div className="flex justify-center gap-3" onPaste={handlePaste}>
                   {otp.map((digit, index) => (
                     <Input
                       key={index}
                       ref={(el) => { inputRefs.current[index] = el; }}
                       type="text"
+                      inputMode="numeric"
                       maxLength={1}
                       value={digit}
                       onChange={(e) => handleChange(index, e.target.value)}

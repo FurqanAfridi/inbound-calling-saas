@@ -73,13 +73,12 @@ const SignUp: React.FC = () => {
     setLoading(true);
 
     try {
-      // Sign up with Supabase - Disable automatic email confirmation
-      // We'll handle email verification via custom OTP instead
+      // Sign up with Supabase - This will automatically send OTP via Supabase
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
         options: {
-          emailRedirectTo: null, // Disable Supabase's automatic email confirmation
+          emailRedirectTo: null, // Disable automatic email confirmation link
           data: {
             first_name: formData.firstName,
             last_name: formData.lastName,
@@ -127,34 +126,8 @@ const SignUp: React.FC = () => {
           // Don't block signup if package assignment fails
         }
 
-        // Generate OTP for email verification
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date();
-        expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 minutes expiry
-
-        // Store OTP in database
-        await supabase
-          .from('email_verification_tokens')
-          .insert({
-            user_id: signUpData.user.id,
-            email: formData.email,
-            token: otp,
-            token_hash: otp, // In production, hash this
-            purpose: 'email_verification',
-            expires_at: expiresAt.toISOString(),
-          });
-
-        // Send OTP via SendGrid email service
-        const emailResult = await emailService.sendOTPEmail(
-          formData.email,
-          otp,
-          'email_verification'
-        );
-
-        if (!emailResult.success) {
-          console.error('Failed to send email:', emailResult.error);
-          // Still allow user to proceed - they can request resend
-        }
+        // Supabase will automatically send OTP email (8-digit code)
+        // No need to manually send email or store OTP in custom table
       }
 
       // Navigate to verify email page

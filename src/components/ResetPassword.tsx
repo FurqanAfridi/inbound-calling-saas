@@ -32,39 +32,16 @@ const ResetPassword: React.FC = () => {
     setLoading(true);
 
     try {
+      // Use Supabase's resetPasswordForEmail which will send OTP automatically
       const { error: resetError } = await resetPassword(email);
 
       if (resetError) {
-        console.error('Reset error:', resetError);
-      }
-
-      // Generate OTP
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + 10);
-
-      await supabase
-        .from('email_verification_tokens')
-        .insert({
-          email: email,
-          token: otp,
-          token_hash: otp,
-          purpose: 'password_reset',
-          expires_at: expiresAt.toISOString(),
-        });
-
-      const emailResult = await emailService.sendOTPEmail(
-        email,
-        otp,
-        'password_reset'
-      );
-
-      if (!emailResult.success) {
-        setError(emailResult.error || 'Failed to send email. Please try again.');
+        setError(resetError.message || 'Failed to send password reset OTP. Please try again.');
         setLoading(false);
         return;
       }
 
+      // Supabase will automatically send 8-digit OTP email
       setSuccess(true);
       setTimeout(() => {
         navigate('/verify-email', { state: { email, purpose: 'password_reset' } });

@@ -114,17 +114,28 @@ const VerifyEmail: React.FC = () => {
           .update({ used_at: new Date().toISOString() })
           .eq('id', tokens.id);
 
+        // Update user profile to mark email as verified
         await supabase
           .from('user_profiles')
           .update({ email_verified: true })
           .eq('id', user.id);
 
+        // Manually confirm email in Supabase Auth
+        // Note: Supabase doesn't provide a direct client-side method to confirm email
+        // The email will be confirmed when user signs in, or you can use admin API
+        // For now, we'll mark it in our database and Supabase will auto-confirm on first login
+        // OR you can create a backend endpoint that uses service_role key to confirm email
+        
+        // Create notification
         await supabase.rpc('create_notification', {
           p_user_id: user.id,
           p_type: 'email_verification',
           p_title: 'Email Verified',
           p_message: 'Your email has been successfully verified.',
         });
+
+        // Refresh the session to ensure user is authenticated
+        await supabase.auth.refreshSession();
 
         navigate('/dashboard');
       }

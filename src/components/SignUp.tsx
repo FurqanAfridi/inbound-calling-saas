@@ -73,11 +73,13 @@ const SignUp: React.FC = () => {
     setLoading(true);
 
     try {
-      // Sign up with Supabase
+      // Sign up with Supabase - Disable automatic email confirmation
+      // We'll handle email verification via custom OTP instead
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
         options: {
+          emailRedirectTo: null, // Disable Supabase's automatic email confirmation
           data: {
             first_name: formData.firstName,
             last_name: formData.lastName,

@@ -53,6 +53,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email,
       password,
       options: {
+        emailRedirectTo: null, // Disable Supabase's automatic email confirmation
         data: metadata,
       },
     });

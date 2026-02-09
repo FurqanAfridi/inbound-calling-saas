@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Mail, Lock } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -8,13 +8,21 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
+import { Alert, AlertDescription } from './ui/alert';
 import characterImage from '../assest/signin.png';
 
 import TwoFactorLogin from './TwoFactorLogin';
 
 const SignIn: React.FC = () => {
   const navigate = useNavigate();
-  const { signIn } = useAuth();
+  const { signIn, updatePassword } = useAuth();
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
@@ -24,6 +32,16 @@ const SignIn: React.FC = () => {
   const [show2FA, setShow2FA] = useState<boolean>(false);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const [pendingUserEmail, setPendingUserEmail] = useState<string>('');
+  
+  // Password reset dialog state
+  const [showPasswordResetDialog, setShowPasswordResetDialog] = useState<boolean>(false);
+  const [resetPassword, setResetPassword] = useState<string>('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState<string>('');
+  const [showResetPassword, setShowResetPassword] = useState<boolean>(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState<boolean>(false);
+  const [resetLoading, setResetLoading] = useState<boolean>(false);
+  const [resetError, setResetError] = useState<string>('');
+  const [resetInitializing, setResetInitializing] = useState<boolean>(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -167,6 +185,137 @@ const SignIn: React.FC = () => {
     setError('Login cancelled. Please sign in again.');
   };
 
+  // Handle password reset link from URL hash fragments
+  useEffect(() => {
+    const handlePasswordResetLink = async () => {
+      try {
+        // Check for hash fragments in URL (Supabase password reset link format)
+        const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        const accessToken = hashParams.get('access_token');
+        const type = hashParams.get('type');
+
+        // If we have a recovery token in the URL, exchange it for a session
+        if (accessToken && type === 'recovery') {
+          setResetInitializing(true);
+          
+          const { data, error: sessionError } = await (supabase.auth as any).setSession({
+            access_token: accessToken,
+            refresh_token: hashParams.get('refresh_token') || '',
+          });
+
+          if (sessionError) {
+            setResetError('Invalid or expired reset link. Please request a new one.');
+            setResetInitializing(false);
+            // Clear hash from URL
+            window.history.replaceState(null, '', window.location.pathname);
+            return;
+          }
+
+          // Clear the hash from URL
+          window.history.replaceState(null, '', window.location.pathname);
+          
+          // Get user email for display
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user?.email) {
+            setPendingUserEmail(user.email);
+          }
+          
+          // Show password reset dialog
+          setShowPasswordResetDialog(true);
+          setResetInitializing(false);
+        }
+      } catch (err: any) {
+        console.error('Error handling password reset link:', err);
+        setResetError('An error occurred while processing the reset link. Please try again.');
+        setResetInitializing(false);
+        // Clear hash from URL
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    };
+
+    handlePasswordResetLink();
+  }, []);
+
+  const handlePasswordResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError('');
+
+    if (!resetPassword || !resetConfirmPassword) {
+      setResetError('Please enter both password fields');
+      return;
+    }
+
+    if (resetPassword.length < 6) {
+      setResetError('Password must be at least 6 characters');
+      return;
+    }
+
+    if (resetPassword !== resetConfirmPassword) {
+      setResetError('Passwords do not match');
+      return;
+    }
+
+    setResetLoading(true);
+
+    try {
+      const { error: updateError } = await updatePassword(resetPassword);
+
+      if (updateError) {
+        setResetError(updateError.message || 'Failed to update password');
+        setResetLoading(false);
+        return;
+      }
+
+      // Store password in history
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        // In production, hash the password before storing
+        await supabase
+          .from('password_history')
+          .insert({
+            user_id: user.id,
+            password_hash: resetPassword, // Should be hashed in production
+          });
+
+        // Create notification
+        await supabase.rpc('create_notification', {
+          p_user_id: user.id,
+          p_type: 'password_changed',
+          p_title: 'Password Changed',
+          p_message: 'Your password has been successfully changed.',
+        });
+
+        // Send password changed email notification
+        if (user.email) {
+          await emailService.sendPasswordChangedEmail(user.email);
+        }
+      }
+
+      // Close dialog and show success message
+      setShowPasswordResetDialog(false);
+      setResetPassword('');
+      setResetConfirmPassword('');
+      setError('');
+      // Show success message
+      alert('Password updated successfully! You can now sign in with your new password.');
+      
+      // Sign out the user so they can sign in with new password
+      await supabase.auth.signOut();
+    } catch (err: any) {
+      setResetError(err.message || 'An error occurred');
+      setResetLoading(false);
+    }
+  };
+
+  const handleClosePasswordResetDialog = () => {
+    // Sign out if dialog is closed without completing password reset
+    supabase.auth.signOut();
+    setShowPasswordResetDialog(false);
+    setResetPassword('');
+    setResetConfirmPassword('');
+    setResetError('');
+  };
+
   // Show 2FA verification screen if needed
   if (show2FA && pendingUserId) {
     return (
@@ -180,7 +329,100 @@ const SignIn: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-background flex">
+    <>
+      {/* Password Reset Dialog */}
+      <Dialog open={showPasswordResetDialog} onOpenChange={handleClosePasswordResetDialog}>
+        <DialogContent className="sm:max-w-md bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-bold text-foreground">Set New Password</DialogTitle>
+            <DialogDescription className="text-muted-foreground">
+              {pendingUserEmail && `Enter a new password for ${pendingUserEmail}`}
+              {!pendingUserEmail && 'Enter a new password to continue'}
+            </DialogDescription>
+          </DialogHeader>
+          
+          {resetInitializing ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+              <span className="ml-3 text-muted-foreground">Verifying reset link...</span>
+            </div>
+          ) : (
+            <form onSubmit={handlePasswordResetSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="resetPassword" className="text-foreground">New Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                  <Input
+                    id="resetPassword"
+                    type={showResetPassword ? "text" : "password"}
+                    placeholder="Enter your new password"
+                    value={resetPassword}
+                    onChange={(e) => setResetPassword(e.target.value)}
+                    className="pl-10 pr-10 bg-background text-foreground border-border"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPassword(!showResetPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showResetPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="resetConfirmPassword" className="text-foreground">Confirm Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                  <Input
+                    id="resetConfirmPassword"
+                    type={showResetConfirmPassword ? "text" : "password"}
+                    placeholder="Confirm your new password"
+                    value={resetConfirmPassword}
+                    onChange={(e) => setResetConfirmPassword(e.target.value)}
+                    className="pl-10 pr-10 bg-background text-foreground border-border"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showResetConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+
+              {resetError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{resetError}</AlertDescription>
+                </Alert>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleClosePasswordResetDialog}
+                  className="flex-1"
+                  disabled={resetLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground"
+                  disabled={resetLoading}
+                >
+                  {resetLoading ? 'Updating...' : 'Update Password'}
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Main sign-in page */}
+      <div className="min-h-screen bg-background flex">
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary to-secondary p-12 relative overflow-hidden">
         <div className="relative z-10 flex flex-col justify-between h-full">
@@ -317,7 +559,8 @@ const SignIn: React.FC = () => {
           </CardContent>
         </Card>
       </div>
-    </div>
+      </div>
+    </>
   );
 };
 

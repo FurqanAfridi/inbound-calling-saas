@@ -29,7 +29,7 @@ const SetNewPassword: React.FC = () => {
 
         // If we have a recovery token in the URL, exchange it for a session
         if (accessToken && type === 'recovery') {
-          const { data, error: sessionError } = await supabase.auth.setSession({
+          const { data, error: sessionError } = await (supabase.auth as any).setSession({
             access_token: accessToken,
             refresh_token: hashParams.get('refresh_token') || '',
           });

@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import CountryCodeSelector from './CountryCodeSelector';
 import { emailService } from '../services/emailService';
 import { assignFreePackageToUser } from '../services/subscriptionService';
+import { validatePassword } from '../utils/passwordValidation';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -60,8 +61,10 @@ const SignUp: React.FC = () => {
       return;
     }
 
-    if (formData.password.length < 6) {
-      setError('Password must be at least 6 characters');
+    // Validate password strength
+    const passwordValidation = validatePassword(formData.password);
+    if (!passwordValidation.isValid) {
+      setError(passwordValidation.errors.join('. '));
       return;
     }
 
@@ -89,26 +92,130 @@ const SignUp: React.FC = () => {
       });
 
       if (signUpError) {
-        setError(signUpError.message || 'Failed to create account');
+        // Handle existing user error properly
+        if (signUpError.message?.includes('already registered') || 
+            signUpError.message?.includes('User already registered') ||
+            signUpError.message?.includes('email address is already registered')) {
+          setError('An account with this email already exists. Please sign in instead.');
+        } else {
+          setError(signUpError.message || 'Failed to create account');
+        }
         setLoading(false);
         return;
       }
 
       if (signUpData.user) {
-        // Create user profile
-        const { error: profileError } = await supabase
+        // Ensure user ID exists
+        if (!signUpData.user.id) {
+          console.error('User ID is missing from signup data');
+          setError('Failed to create user account. Please try again.');
+          setLoading(false);
+          return;
+        }
+
+        // Create user profile - ensure it's saved properly with all required fields
+        // Format phone number correctly (ensure country code is included)
+        const phoneNumber = formData.phone.startsWith(countryCode) 
+          ? formData.phone 
+          : `${countryCode}${formData.phone}`;
+        
+        const profileData = {
+          id: signUpData.user.id,
+          first_name: formData.firstName || null,
+          last_name: formData.lastName || null,
+          phone: phoneNumber || null,
+          country_code: countryCode || '+1',
+          email_verified: false,
+          phone_verified: false,
+          account_status: 'active', // Explicitly set account status
+          kyc_status: 'pending', // Set default KYC status
+          metadata: {}, // Initialize metadata as empty object
+        };
+
+        console.log('Creating user profile with data:', profileData);
+        console.log('User ID:', signUpData.user.id);
+        console.log('User Email:', signUpData.user.email);
+
+        // Try insert first, if it fails due to conflict, use upsert
+        const { error: insertError } = await supabase
           .from('user_profiles')
-          .upsert({
-            id: signUpData.user.id,
-            first_name: formData.firstName,
-            last_name: formData.lastName,
-            phone: `${countryCode}${formData.phone}`,
-            country_code: countryCode,
-            email_verified: false,
-          });
+          .insert(profileData);
+
+        let profileError = insertError;
+
+        // If insert fails due to conflict, try upsert
+        if (insertError && (insertError.code === '23505' || insertError.message?.includes('duplicate'))) {
+          console.log('Profile already exists, using upsert instead');
+          const { error: upsertError } = await supabase
+            .from('user_profiles')
+            .upsert(profileData, {
+              onConflict: 'id',
+            });
+          profileError = upsertError;
+        }
 
         if (profileError) {
-          console.error('Error creating profile:', profileError);
+          console.error('Error creating/updating profile:', profileError);
+          console.error('Profile data that failed:', profileData);
+          console.error('Error details:', {
+            code: profileError.code,
+            message: profileError.message,
+            details: profileError.details,
+            hint: profileError.hint
+          });
+          
+          // Try one more time with a simple insert (in case upsert syntax is the issue)
+          if (profileError.code !== '23505') { // Not a duplicate key error
+            console.log('Retrying profile creation with simple insert...');
+            const { error: retryError } = await supabase
+              .from('user_profiles')
+              .insert(profileData);
+            
+            if (retryError) {
+              console.error('Retry also failed:', retryError);
+              // Show error but don't block signup - user can still verify email
+              // The profile can be created later or manually
+            } else {
+              console.log('Profile created successfully on retry');
+            }
+          }
+        } else {
+          console.log('User profile saved successfully');
+          
+          // Verify the profile was actually saved
+          const { data: verifyProfile, error: verifyError } = await supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('id', signUpData.user.id)
+            .single();
+          
+          if (verifyError) {
+            console.error('Error verifying profile creation:', verifyError);
+            // Try to create it again if verification fails
+            console.log('Attempting to create profile again after verification failed...');
+            const { error: recreateError } = await supabase
+              .from('user_profiles')
+              .insert(profileData);
+            
+            if (recreateError) {
+              console.error('Failed to recreate profile:', recreateError);
+            } else {
+              console.log('Profile recreated successfully');
+            }
+          } else if (verifyProfile) {
+            console.log('Profile verified in database:', verifyProfile);
+          } else {
+            console.warn('Profile was not found after creation, attempting to create again...');
+            const { error: recreateError } = await supabase
+              .from('user_profiles')
+              .insert(profileData);
+            
+            if (recreateError) {
+              console.error('Failed to recreate profile:', recreateError);
+            } else {
+              console.log('Profile created successfully on second attempt');
+            }
+          }
         }
 
         // Assign free package to new user
@@ -268,6 +375,9 @@ const SignUp: React.FC = () => {
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  Password must be at least 8 characters and include at least one capital letter
+                </p>
               </div>
 
               <div className="space-y-2">

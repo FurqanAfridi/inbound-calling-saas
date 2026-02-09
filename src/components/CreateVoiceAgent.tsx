@@ -85,6 +85,22 @@ const CreateVoiceAgent: React.FC = () => {
   });
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
 
+  // Helper function to format phone number display (avoid duplicate country code)
+  // phone_number in database already includes country_code, so we just display phone_number
+  const formatPhoneDisplay = (phoneNumber: string, countryCode: string): string => {
+    if (!phoneNumber) return '';
+    
+    // phone_number is stored with country_code already included (from AddInboundNumber)
+    // So we just return phone_number as-is
+    // But if for some reason it doesn't start with +, we add the country_code
+    if (phoneNumber.startsWith('+')) {
+      return phoneNumber;
+    }
+    
+    // Fallback: if phone_number doesn't start with +, combine with country_code
+    return `${countryCode}${phoneNumber}`;
+  };
+
   useEffect(() => {
     const initialize = async () => {
       await fetchInboundNumbers();
@@ -1088,7 +1104,7 @@ const CreateVoiceAgent: React.FC = () => {
                             <SelectItem key={number.id} value={number.id}>
                               <div className="flex items-center justify-between w-full">
                                 <span>
-                                  {number.country_code} {number.phone_number}
+                                  {formatPhoneDisplay(number.phone_number, number.country_code)}
                                   {number.phone_label && ` - ${number.phone_label}`}
                                 </span>
                                 {assignedAgent && !isAssignedToCurrentAgent && (
@@ -1125,7 +1141,7 @@ const CreateVoiceAgent: React.FC = () => {
                           )}
                         </div>
                         <p className="text-sm text-foreground">
-                          <strong>Number:</strong> {selected.country_code} {selected.phone_number}
+                          <strong>Number:</strong> {formatPhoneDisplay(selected.phone_number, selected.country_code)}
                         </p>
                         {selected.phone_label && (
                           <p className="text-sm text-muted-foreground">

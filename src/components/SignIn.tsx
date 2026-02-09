@@ -4,6 +4,7 @@ import { Eye, EyeOff, Mail, Lock } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { emailService } from '../services/emailService';
+import { validatePassword } from '../utils/passwordValidation';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -63,7 +64,63 @@ const SignIn: React.FC = () => {
       const { error: signInError } = await signIn(email, password);
 
       if (signInError) {
-        setError(signInError.message || 'Invalid email or password');
+        // Check if user exists to provide specific error messages
+        let errorMessage = 'Invalid email or password';
+        const errorMsg = signInError.message?.toLowerCase() || '';
+        
+        // Check if email format is valid
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          errorMessage = 'Please enter a valid email address';
+          setError(errorMessage);
+          setLoading(false);
+          return;
+        }
+        
+        // Check for specific error types
+        if (errorMsg.includes('email not confirmed') || errorMsg.includes('email_not_confirmed')) {
+          errorMessage = 'Please verify your email address before signing in';
+        } else if (errorMsg.includes('too many requests') || errorMsg.includes('rate limit')) {
+          errorMessage = 'Too many login attempts. Please try again later';
+        } else if (errorMsg.includes('invalid login credentials') || 
+                   errorMsg.includes('invalid password') ||
+                   errorMsg.includes('email or password')) {
+          
+          // Try to determine if user exists by checking our database
+          // We'll use a database function or check user_profiles
+          // Since we can't query auth.users directly, we'll check if we can find the user
+          // by attempting to see if there's a profile (though this requires user_id)
+          
+          // Better approach: Use Supabase RPC to check if user exists
+          try {
+            // Call a database function to check if user exists by email
+            // If this function doesn't exist, we'll create a fallback
+            const { data: userExists, error: checkError } = await supabase.rpc('check_user_exists', {
+              p_email: email.toLowerCase().trim()
+            }).catch(() => ({ data: null, error: { message: 'Function not found' } }));
+            
+            if (!checkError && userExists === true) {
+              // User exists, so password must be wrong
+              errorMessage = 'Password is not correct';
+            } else if (!checkError && userExists === false) {
+              // User doesn't exist
+              errorMessage = 'User does not exist';
+            } else {
+              // RPC function doesn't exist or returned unexpected value
+              // Provide helpful fallback message
+              errorMessage = 'User does not exist or password is not correct';
+            }
+          } catch (rpcError) {
+            // RPC function doesn't exist, provide helpful message
+            // Note: You'll need to create the check_user_exists RPC function in Supabase
+            // For now, show a generic but helpful message
+            errorMessage = 'User does not exist or password is not correct';
+          }
+        } else {
+          errorMessage = signInError.message || 'Invalid email or password';
+        }
+        
+        setError(errorMessage);
         setLoading(false);
         return;
       }
@@ -245,13 +302,15 @@ const SignIn: React.FC = () => {
       return;
     }
 
-    if (resetPassword.length < 6) {
-      setResetError('Password must be at least 6 characters');
+    if (resetPassword !== resetConfirmPassword) {
+      setResetError('Passwords do not match');
       return;
     }
 
-    if (resetPassword !== resetConfirmPassword) {
-      setResetError('Passwords do not match');
+    // Validate password strength
+    const passwordValidation = validatePassword(resetPassword);
+    if (!passwordValidation.isValid) {
+      setResetError(passwordValidation.errors.join('. '));
       return;
     }
 
@@ -368,6 +427,9 @@ const SignIn: React.FC = () => {
                     {showResetPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  Password must be at least 8 characters and include at least one capital letter
+                </p>
               </div>
 
               <div className="space-y-2">

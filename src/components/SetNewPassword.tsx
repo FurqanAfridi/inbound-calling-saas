@@ -5,6 +5,7 @@ import characterImage from '../assest/resetpassword.png';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { emailService } from '../services/emailService';
+import { validatePassword } from '../utils/passwordValidation';
 
 const SetNewPassword: React.FC = () => {
   const navigate = useNavigate();
@@ -93,13 +94,15 @@ const SetNewPassword: React.FC = () => {
       return;
     }
 
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
       return;
     }
 
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
+    // Validate password strength
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      setError(passwordValidation.errors.join('. '));
       return;
     }
 

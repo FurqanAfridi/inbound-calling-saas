@@ -9,6 +9,7 @@ import AccountDeactivation from './AccountDeactivation';
 import AvatarUpload from './AvatarUpload';
 import PhoneVerification from './PhoneVerification';
 import KYCVerification from './KYCVerification';
+import { validatePassword } from '../utils/passwordValidation';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -16,6 +17,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
 
 interface ProfileData {
   [key: string]: any;
@@ -40,6 +48,14 @@ const Profile: React.FC = () => {
     new: false,
     confirm: false,
   });
+  
+  // Phone number change verification state
+  const [showPhoneVerificationDialog, setShowPhoneVerificationDialog] = useState(false);
+  const [pendingPhoneNumber, setPendingPhoneNumber] = useState<string>('');
+  const [pendingCountryCode, setPendingCountryCode] = useState<string>('');
+  const [phoneVerificationOTP, setPhoneVerificationOTP] = useState<string>('');
+  const [phoneVerificationLoading, setPhoneVerificationLoading] = useState(false);
+  const [phoneVerificationError, setPhoneVerificationError] = useState<string>('');
 
   useEffect(() => {
     if (!user) return;
@@ -108,6 +124,23 @@ const Profile: React.FC = () => {
     setErrorMessage(null);
 
     try {
+      // Check if phone number is being changed
+      const originalPhone = originalProfileData?.phone || '';
+      const originalCountryCode = originalProfileData?.country_code || '';
+      const newPhone = profileData.phone || '';
+      const newCountryCode = profileData.country_code || '';
+      
+      const phoneChanged = originalPhone !== newPhone || originalCountryCode !== newCountryCode;
+      
+      if (phoneChanged) {
+        // Phone number is being changed - require email verification
+        setPendingPhoneNumber(newPhone);
+        setPendingCountryCode(newCountryCode);
+        setShowPhoneVerificationDialog(true);
+        setLoading(false);
+        return;
+      }
+
       const updateData: ProfileData = { ...profileData };
       delete updateData.id;
       delete updateData.created_at;
@@ -150,6 +183,109 @@ const Profile: React.FC = () => {
     }
   };
 
+  // Send email OTP for phone number change verification
+  const sendPhoneChangeVerification = async () => {
+    if (!user?.email) {
+      setPhoneVerificationError('User email not found');
+      return;
+    }
+
+    setPhoneVerificationLoading(true);
+    setPhoneVerificationError('');
+
+    try {
+      // Send OTP via Supabase email
+      const { error: otpError } = await (supabase.auth as any).signInWithOtp({
+        email: user.email,
+        options: {
+          shouldCreateUser: false,
+        },
+      });
+
+      if (otpError) {
+        throw otpError;
+      }
+
+      setPhoneVerificationError('');
+      // OTP sent successfully - user will enter it in the dialog
+    } catch (err: any) {
+      console.error('Error sending verification email:', err);
+      setPhoneVerificationError(err.message || 'Failed to send verification email');
+    } finally {
+      setPhoneVerificationLoading(false);
+    }
+  };
+
+  // Verify OTP and update phone number
+  const verifyPhoneChangeOTP = async () => {
+    if (!user?.email || !phoneVerificationOTP) {
+      setPhoneVerificationError('Please enter the verification code');
+      return;
+    }
+
+    if (phoneVerificationOTP.length !== 6 && phoneVerificationOTP.length !== 8) {
+      setPhoneVerificationError('Please enter a valid 6 or 8 digit code');
+      return;
+    }
+
+    setPhoneVerificationLoading(true);
+    setPhoneVerificationError('');
+
+    try {
+      // Verify OTP
+      const { data, error: verifyError } = await (supabase.auth as any).verifyOtp({
+        email: user.email,
+        token: phoneVerificationOTP,
+        type: 'email',
+      });
+
+      if (verifyError) {
+        throw verifyError;
+      }
+
+      // OTP verified - now update the phone number
+      const updateData: ProfileData = { ...profileData };
+      delete updateData.id;
+      delete updateData.created_at;
+      updateData.updated_at = new Date().toISOString();
+      updateData.phone = pendingPhoneNumber;
+      updateData.country_code = pendingCountryCode;
+      updateData.phone_verified = false; // Reset phone verification status
+
+      const { error: updateError } = await supabase
+        .from('user_profiles')
+        .update(updateData)
+        .eq('id', user.id);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      // Success - close dialog and refresh profile
+      setShowPhoneVerificationDialog(false);
+      setPhoneVerificationOTP('');
+      setPendingPhoneNumber('');
+      setPendingCountryCode('');
+      setSuccessMessage('Phone number updated successfully! Please verify your new phone number.');
+      setIsEditMode(false);
+      await loadProfile();
+      setTimeout(() => setSuccessMessage(null), 5000);
+    } catch (err: any) {
+      console.error('Error verifying OTP:', err);
+      setPhoneVerificationError(err.message || 'Invalid verification code. Please try again.');
+    } finally {
+      setPhoneVerificationLoading(false);
+    }
+  };
+
+  // Initialize email verification when dialog opens
+  useEffect(() => {
+    if (showPhoneVerificationDialog && user?.email) {
+      sendPhoneChangeVerification();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPhoneVerificationDialog]);
+
   const handleCancelEdit = () => {
     if (originalProfileData) {
       setProfileData({ ...originalProfileData });
@@ -172,8 +308,10 @@ const Profile: React.FC = () => {
       return;
     }
 
-    if (passwordData.newPassword.length < 6) {
-      setErrorMessage('New password must be at least 6 characters long');
+    // Validate password strength
+    const passwordValidation = validatePassword(passwordData.newPassword);
+    if (!passwordValidation.isValid) {
+      setErrorMessage(passwordValidation.errors.join('. '));
       setLoading(false);
       return;
     }
@@ -249,8 +387,21 @@ const Profile: React.FC = () => {
       .join(' ');
   };
 
-  const shouldDisplayField = (key: string): boolean => {
+  const shouldDisplayField = (key: string, showAll: boolean = false): boolean => {
     const hiddenFields = ['id', 'user_id', 'created_at', 'updated_at', 'deleted_at'];
+    
+    // Hide company and KYC fields from main profile view
+    const companyFields = ['company_name', 'company_registration_number', 'company_address', 'company_website', 'company_tax_id'];
+    const kycFields = ['kyc_status', 'kyc_verified_at', 'kyc_verified_by', 'kyc_rejection_reason'];
+    const metadataFields = ['metadata'];
+    
+    if (!showAll) {
+      // Hide company, KYC, and metadata fields from main view
+      if (companyFields.includes(key) || kycFields.includes(key) || metadataFields.includes(key)) {
+        return false;
+      }
+    }
+    
     return !hiddenFields.includes(key);
   };
 
@@ -267,35 +418,18 @@ const Profile: React.FC = () => {
   const renderViewField = (key: string, value: any) => {
     if (!shouldDisplayField(key)) return null;
 
-    let displayValue: string;
-    if (value === null || value === undefined || value === '') {
-      displayValue = 'Not set';
-    } else if (typeof value === 'boolean') {
-      displayValue = value ? 'Yes' : 'No';
-    } else if (key.includes('_at') || key.includes('date')) {
-      try {
-        const date = new Date(value);
-        if (key.includes('date_of_birth')) {
-          displayValue = date.toLocaleDateString();
-        } else {
-          displayValue = date.toLocaleString();
-        }
-      } catch {
-        displayValue = String(value);
-      }
-    } else if (key === 'account_status') {
-      displayValue = String(value).charAt(0).toUpperCase() + String(value).slice(1);
-    } else if (key === 'avatar_url' && value) {
+    // Special handling for avatar
+    if (key === 'avatar_url' && value) {
       return (
-        <div key={key} className="mb-4">
-          <Label className="text-sm font-semibold text-muted-foreground mb-2 block">
+        <div key={key} className="mb-6">
+          <Label className="text-sm font-semibold text-muted-foreground mb-3 block">
             {formatFieldName(key)}
           </Label>
           <div className="flex items-center gap-4">
             <img 
               src={value} 
               alt="Avatar" 
-              className="w-16 h-16 rounded-full object-cover"
+              className="w-20 h-20 rounded-full object-cover border-2 border-border"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.display = 'none';
               }}
@@ -304,18 +438,92 @@ const Profile: React.FC = () => {
           </div>
         </div>
       );
+    }
+
+    let displayValue: string | React.ReactNode;
+    let isEmpty = false;
+    
+    if (value === null || value === undefined || value === '') {
+      displayValue = (
+        <span className="text-muted-foreground italic">Not set</span>
+      );
+      isEmpty = true;
+    } else if (typeof value === 'boolean') {
+      displayValue = (
+        <Badge variant={value ? 'default' : 'secondary'} className="w-fit">
+          {value ? (
+            <>
+              <CheckCircle className="w-3 h-3 mr-1" />
+              Yes
+            </>
+          ) : (
+            <>
+              <X className="w-3 h-3 mr-1" />
+              No
+            </>
+          )}
+        </Badge>
+      );
+    } else if (key.includes('_at') || key.includes('date')) {
+      try {
+        const date = new Date(value);
+        if (key.includes('date_of_birth')) {
+          displayValue = date.toLocaleDateString('en-US', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+        } else {
+          displayValue = date.toLocaleString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+        }
+      } catch {
+        displayValue = String(value);
+      }
+    } else if (key === 'account_status') {
+      const statusColors: { [key: string]: string } = {
+        active: 'bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20',
+        inactive: 'bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20',
+        suspended: 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-500/20',
+        deleted: 'bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20',
+      };
+      const status = String(value).toLowerCase();
+      displayValue = (
+        <Badge 
+          variant="outline" 
+          className={`${statusColors[status] || 'bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20'} capitalize`}
+        >
+          {String(value).charAt(0).toUpperCase() + String(value).slice(1)}
+        </Badge>
+      );
+    } else if (key === 'phone' && value) {
+      // Format phone number nicely - don't show country_code separately if it's in phone
+      const phoneStr = String(value);
+      const countryCode = profileData.country_code || '+1';
+      // If phone already includes country code, use it as is, otherwise prepend
+      displayValue = phoneStr.startsWith('+') 
+        ? phoneStr 
+        : `${countryCode}${phoneStr}`;
+    } else if (key === 'country_code') {
+      // Don't show country_code separately if phone is shown (it's already included)
+      return null;
     } else {
       displayValue = String(value);
     }
 
     return (
-      <div key={key} className="mb-4">
-        <Label className="text-sm font-semibold text-muted-foreground mb-1 block">
+      <div key={key} className="mb-5 pb-5 border-b border-border last:border-0 last:pb-0 last:mb-0">
+        <Label className="text-xs font-medium text-muted-foreground mb-2 block uppercase tracking-wide">
           {formatFieldName(key)}
         </Label>
-        <p className={`text-base ${value === null || value === undefined || value === '' ? 'text-muted-foreground' : 'text-foreground'}`}>
+        <div className={`text-base ${isEmpty ? '' : 'text-foreground font-medium'}`}>
           {displayValue}
-        </p>
+        </div>
       </div>
     );
   };
@@ -460,131 +668,124 @@ const Profile: React.FC = () => {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="mb-6">
-              <Label className="text-sm font-medium mb-2 block text-foreground">
-                Email Address
-              </Label>
-              <Input
-                value={user?.email || ''}
-                disabled
-                className="bg-muted text-muted-foreground border-border"
-              />
-              <p className="text-xs text-muted-foreground mt-1">Email cannot be changed</p>
-            </div>
-
-            <div className="border-t border-border my-6"></div>
 
             {isEditMode ? (
               <form onSubmit={handleProfileSubmit}>
+                {/* Email Address - Read Only */}
+                <div className="mb-6 pb-6 border-b border-border">
+                  <Label className="text-sm font-medium mb-2 block text-foreground">
+                    Email Address
+                  </Label>
+                  <Input
+                    value={user?.email || ''}
+                    disabled
+                    className="bg-muted text-muted-foreground border-border"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">Email cannot be changed</p>
+                </div>
+
                 <div className="space-y-4">
+                  {/* Always show these fields in edit mode */}
+                  <div className="mb-4">
+                    <Label htmlFor="first_name" className="text-sm font-medium mb-2 block text-foreground">
+                      First Name
+                    </Label>
+                    <Input
+                      id="first_name"
+                      name="first_name"
+                      value={profileData.first_name || ''}
+                      onChange={handleInputChange}
+                      placeholder="Enter your first name"
+                      className="bg-background text-foreground border-border"
+                    />
+                  </div>
+                  <div className="mb-4">
+                    <Label htmlFor="last_name" className="text-sm font-medium mb-2 block text-foreground">
+                      Last Name
+                    </Label>
+                    <Input
+                      id="last_name"
+                      name="last_name"
+                      value={profileData.last_name || ''}
+                      onChange={handleInputChange}
+                      placeholder="Enter your last name"
+                      className="bg-background text-foreground border-border"
+                    />
+                  </div>
+                  <div className="mb-4">
+                    <Label className="text-sm font-medium mb-2 block text-foreground">
+                      Phone Number
+                    </Label>
+                    <div className="flex gap-2">
+                      <CountryCodeSelector
+                        value={profileData.country_code || '+1'}
+                        onChange={(code) => handleProfileChange('country_code', code)}
+                      />
+                      <Input
+                        name="phone"
+                        value={profileData.phone || ''}
+                        onChange={handleInputChange}
+                        placeholder="Enter your phone number"
+                        type="tel"
+                        maxLength={10}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        className="flex-1 bg-background text-foreground border-border"
+                      />
+                    </div>
+                  </div>
+                  <div className="mb-4">
+                    <Label htmlFor="date_of_birth" className="text-sm font-medium mb-2 block text-foreground">
+                      Date of Birth
+                    </Label>
+                    <Input
+                      id="date_of_birth"
+                      name="date_of_birth"
+                      type="date"
+                      value={profileData.date_of_birth || ''}
+                      onChange={handleInputChange}
+                      className="bg-background text-foreground border-border"
+                    />
+                  </div>
+                  <div className="mb-4">
+                    <Label htmlFor="bio" className="text-sm font-medium mb-2 block text-foreground">
+                      Bio
+                    </Label>
+                    <textarea
+                      id="bio"
+                      name="bio"
+                      value={profileData.bio || ''}
+                      onChange={handleInputChange}
+                      placeholder="Tell us about yourself"
+                      rows={4}
+                      className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 text-foreground"
+                    />
+                  </div>
+                  <div className="mb-4">
+                    <Label htmlFor="avatar_url" className="text-sm font-medium mb-2 block text-foreground">
+                      Avatar URL
+                    </Label>
+                    <Input
+                      id="avatar_url"
+                      name="avatar_url"
+                      value={profileData.avatar_url || ''}
+                      onChange={handleInputChange}
+                      placeholder="https://example.com/avatar.jpg"
+                      type="url"
+                      className="bg-background text-foreground border-border"
+                    />
+                  </div>
+                  
+                  {/* Render other user fields that might exist */}
                   {Object.keys(profileData)
+                    .filter(key => shouldDisplayField(key) && 
+                      !['first_name', 'last_name', 'phone', 'country_code', 'date_of_birth', 'bio', 'avatar_url'].includes(key))
                     .sort((a, b) => {
-                      const order: { [key: string]: number } = {
-                        first_name: 1,
-                        last_name: 2,
-                        phone: 3,
-                        country_code: 4,
-                        date_of_birth: 5,
-                        bio: 6,
-                        avatar_url: 7,
-                      };
+                      const order: { [key: string]: number } = {};
                       return (order[a] || 99) - (order[b] || 99);
                     })
                     .map(key => renderEditField(key, profileData[key]))}
                   
-                  {Object.keys(profileData).length === 0 && (
-                    <>
-                      <div className="mb-4">
-                        <Label htmlFor="first_name" className="text-sm font-medium mb-2 block text-foreground">
-                          First Name
-                        </Label>
-                        <Input
-                          id="first_name"
-                          name="first_name"
-                          value={profileData.first_name || ''}
-                          onChange={handleInputChange}
-                          placeholder="Enter your first name"
-                          className="bg-background text-foreground border-border"
-                        />
-                      </div>
-                      <div className="mb-4">
-                        <Label htmlFor="last_name" className="text-sm font-medium mb-2 block text-foreground">
-                          Last Name
-                        </Label>
-                        <Input
-                          id="last_name"
-                          name="last_name"
-                          value={profileData.last_name || ''}
-                          onChange={handleInputChange}
-                          placeholder="Enter your last name"
-                          className="bg-background text-foreground border-border"
-                        />
-                      </div>
-                      <div className="mb-4">
-                        <Label className="text-sm font-medium mb-2 block text-foreground">
-                          Phone Number
-                        </Label>
-                        <div className="flex gap-2">
-                          <CountryCodeSelector
-                            value={profileData.country_code || '+1'}
-                            onChange={(code) => handleProfileChange('country_code', code)}
-                          />
-                          <Input
-                            name="phone"
-                            value={profileData.phone || ''}
-                            onChange={handleInputChange}
-                            placeholder="Enter your phone number"
-                            type="tel"
-                            maxLength={10}
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            className="flex-1 bg-background text-foreground border-border"
-                          />
-                        </div>
-                      </div>
-                      <div className="mb-4">
-                        <Label htmlFor="avatar_url" className="text-sm font-medium mb-2 block text-foreground">
-                          Avatar URL
-                        </Label>
-                        <Input
-                          id="avatar_url"
-                          name="avatar_url"
-                          value={profileData.avatar_url || ''}
-                          onChange={handleInputChange}
-                          placeholder="https://example.com/avatar.jpg"
-                          type="url"
-                          className="bg-background text-foreground border-border"
-                        />
-                      </div>
-                      <div className="mb-4">
-                        <Label htmlFor="date_of_birth" className="text-sm font-medium mb-2 block text-foreground">
-                          Date of Birth
-                        </Label>
-                        <Input
-                          id="date_of_birth"
-                          name="date_of_birth"
-                          type="date"
-                          value={profileData.date_of_birth || ''}
-                          onChange={handleInputChange}
-                          className="bg-background text-foreground border-border"
-                        />
-                      </div>
-                      <div className="mb-4">
-                        <Label htmlFor="bio" className="text-sm font-medium mb-2 block text-foreground">
-                          Bio
-                        </Label>
-                        <textarea
-                          id="bio"
-                          name="bio"
-                          value={profileData.bio || ''}
-                          onChange={handleInputChange}
-                          placeholder="Tell us about yourself"
-                          rows={4}
-                          className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 text-foreground"
-                        />
-                      </div>
-                    </>
-                  )}
 
                   <div className="flex justify-end gap-3 mt-6">
                     <Button
@@ -608,33 +809,57 @@ const Profile: React.FC = () => {
                 </div>
               </form>
             ) : (
-              <div>
+              <div className="space-y-6">
+                {/* Email Address - Always shown */}
+                <div className="pb-5 border-b border-border">
+                  <Label className="text-xs font-medium text-muted-foreground mb-2 block uppercase tracking-wide">
+                    Email Address
+                  </Label>
+                  <div className="text-base text-foreground font-medium flex items-center gap-2">
+                    <Mail className="w-4 h-4 text-muted-foreground" />
+                    {user?.email || 'Not set'}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Email cannot be changed</p>
+                </div>
+
+                {/* User Profile Fields */}
                 {Object.keys(profileData).length > 0 ? (
-                  Object.keys(profileData)
-                    .sort((a, b) => {
-                      const order: { [key: string]: number } = {
-                        first_name: 1,
-                        last_name: 2,
-                        phone: 3,
-                        country_code: 4,
-                        date_of_birth: 5,
-                        bio: 6,
-                        avatar_url: 7,
-                        account_status: 8,
-                        email_verified: 9,
-                        phone_verified: 10,
-                        last_login_at: 11,
-                        last_active_at: 12,
-                      };
-                      return (order[a] || 99) - (order[b] || 99);
-                    })
-                    .map(key => renderViewField(key, profileData[key]))
+                  <div>
+                    {Object.keys(profileData)
+                      .filter(key => shouldDisplayField(key))
+                      .sort((a, b) => {
+                        const order: { [key: string]: number } = {
+                          first_name: 1,
+                          last_name: 2,
+                          phone: 3,
+                          country_code: 4,
+                          date_of_birth: 5,
+                          bio: 6,
+                          avatar_url: 7,
+                          account_status: 8,
+                          email_verified: 9,
+                          phone_verified: 10,
+                          last_login_at: 11,
+                          last_active_at: 12,
+                        };
+                        return (order[a] || 99) - (order[b] || 99);
+                      })
+                      .map(key => renderViewField(key, profileData[key]))}
+                  </div>
                 ) : (
-                  <div className="text-center py-8">
-                    <p className="text-foreground mb-2">No profile information available</p>
-                    <p className="text-sm text-muted-foreground mb-4">
+                  <div className="text-center py-12">
+                    <User className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                    <p className="text-foreground font-medium mb-2">No profile information available</p>
+                    <p className="text-sm text-muted-foreground mb-6">
                       Click "Edit Profile" to add your information
                     </p>
+                    <Button
+                      onClick={() => setIsEditMode(true)}
+                      className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                    >
+                      <Edit className="w-4 h-4 mr-2" />
+                      Add Profile Information
+                    </Button>
                   </div>
                 )}
               </div>
@@ -697,7 +922,9 @@ const Profile: React.FC = () => {
                       {showPasswords.new ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                     </button>
                   </div>
-                  <p className="text-xs text-muted-foreground">Password must be at least 6 characters long</p>
+                  <p className="text-xs text-muted-foreground">
+                    Password must be at least 8 characters and include at least one capital letter
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -755,6 +982,83 @@ const Profile: React.FC = () => {
           <AccountDeactivation />
         </TabsContent>
       </Tabs>
+
+      {/* Phone Number Change Verification Dialog */}
+      <Dialog open={showPhoneVerificationDialog} onOpenChange={setShowPhoneVerificationDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Verify Email to Change Phone Number</DialogTitle>
+            <DialogDescription>
+              For security reasons, please verify your email address before changing your phone number.
+              We've sent a verification code to {user?.email}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 mt-4">
+            {phoneVerificationError && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>{phoneVerificationError}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="phoneVerificationOTP" className="text-foreground">
+                Verification Code
+              </Label>
+              <Input
+                id="phoneVerificationOTP"
+                type="text"
+                placeholder="Enter 6 or 8 digit code"
+                value={phoneVerificationOTP}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/\D/g, '').slice(0, 8);
+                  setPhoneVerificationOTP(value);
+                  setPhoneVerificationError('');
+                }}
+                maxLength={8}
+                className="bg-background text-foreground border-border text-center text-lg tracking-widest"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter the verification code sent to your email
+              </p>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowPhoneVerificationDialog(false);
+                  setPhoneVerificationOTP('');
+                  setPhoneVerificationError('');
+                  setPendingPhoneNumber('');
+                  setPendingCountryCode('');
+                  // Revert phone number changes
+                  if (originalProfileData) {
+                    setProfileData({ ...originalProfileData });
+                  }
+                }}
+                disabled={phoneVerificationLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={sendPhoneChangeVerification}
+                variant="outline"
+                disabled={phoneVerificationLoading}
+              >
+                Resend Code
+              </Button>
+              <Button
+                onClick={verifyPhoneChangeOTP}
+                disabled={phoneVerificationLoading || !phoneVerificationOTP}
+              >
+                {phoneVerificationLoading ? 'Verifying...' : 'Verify & Update'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };
